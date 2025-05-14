@@ -2,15 +2,20 @@ package util;
 
 import java.io.IOException;
 import java.net.*;
-import java.util.Scanner;
+import java.util.function.Consumer;
 
-public class UDPConnection extends Thread {
+public class UDPConnection {
+
     private static UDPConnection instance;
+
     private DatagramSocket socket;
-    private int destinationPort;
-    private String destinationIP;
+    private boolean running = false;
+    private Thread receiveThread;
+
+    private Consumer<String> onMessageReceived;
 
     private UDPConnection() {
+        // Constructor privado para singleton
     }
 
     public static UDPConnection getInstance() {
@@ -20,69 +25,55 @@ public class UDPConnection extends Thread {
         return instance;
     }
 
-    public void setPort(int port) {
+    public void startListener(int listenPort) {
         try {
-            this.socket = new DatagramSocket(port);
+            socket = new DatagramSocket(listenPort);
+            running = true;
+
+            receiveThread = new Thread(() -> {
+                byte[] buffer = new byte[1024];
+                while (running) {
+                    try {
+                        DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                        socket.receive(packet);
+                        String msg = new String(packet.getData(), 0, packet.getLength());
+                        if (onMessageReceived != null) {
+                            onMessageReceived.accept(msg);
+                        }
+                    } catch (IOException e) {
+                        if (running) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            });
+
+            receiveThread.setDaemon(true);
+            receiveThread.start();
+
         } catch (SocketException e) {
             e.printStackTrace();
         }
     }
 
-    public void setDestination(String ip, int port) {
-        this.destinationIP = ip;
-        this.destinationPort = port;
-    }
-
-    @Override
-    public void run() {
-        Scanner scanner = new Scanner(System.in);
-        Thread receiverThread = new Thread(() -> {
-            try {
-                System.out.println("Listening for messages...");
-                while (true) {
-                    byte[] buf = new byte[1024];
-                    DatagramPacket packet = new DatagramPacket(buf, buf.length);
-                    socket.receive(packet);
-                    String msg = new String(packet.getData(), 0, packet.getLength()).trim();
-                    InetAddress senderAddress = packet.getAddress();
-                    int senderPort = packet.getPort();
-                    System.out.println("\n Message from " + senderAddress.getHostAddress() + ":" + senderPort + " → " + msg);
-
-                }
-            } catch (IOException e) {
-                System.err.println("Receiver stopped.");
-            }
-        });
-
-        receiverThread.start();
-
+    public void sendDatagram(String message, String ip, int port) {
         try {
-            while (true) {
-                System.out.print("\n Enter message (or type 'exit' to quit): ");
-                String msg = scanner.nextLine();
-
-                if (msg.equalsIgnoreCase("exit")) {
-                    socket.close();
-                    break;
-                }
-
-                sendDatagram(msg, destinationIP, destinationPort);
-            }
-        } catch (Exception e) {
+            byte[] buffer = message.getBytes();
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length, InetAddress.getByName(ip), port);
+            socket.send(packet);
+        } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    public void sendDatagram(String msg, String ip, int port) {
-        new Thread(() -> {
-            try {
-                InetAddress ipAddress = InetAddress.getByName(ip);
-                DatagramPacket packet = new DatagramPacket(msg.getBytes(), msg.length(), ipAddress, port);
-                socket.send(packet);
-                System.out.println("Message sent to " + ip + ":" + port);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }).start();
+    public void setOnMessageReceived(Consumer<String> handler) {
+        this.onMessageReceived = handler;
+    }
+
+    public void stop() {
+        running = false;
+        if (socket != null && !socket.isClosed()) {
+            socket.close();
+        }
     }
 }
